@@ -2,6 +2,7 @@ use rust_decimal::Error;
 
 pub type SciResult<R> = Result<R, SciError>;
 
+#[derive(Debug)]
 pub enum SciError {
     CoefficientError(Option<String>),
     ConversionError(Option<String>),

@@ -15,9 +15,9 @@ use crate::modules::scientific_notation::error::{SciError, SciResult};
 /// 9.2233720368547758070x10^5 -> The mantissa contains a value 10 times higher than i64::MAX,
 /// conversion will fail
 pub struct ScientificNotation {
-    coefficient: Decimal,
-    exponent: i16,
-    display_decimals: usize
+    pub(crate) coefficient: Decimal,
+    pub(crate) exponent: i16,
+    pub(crate) display_decimals: usize
 }
 
 impl ScientificNotation {
