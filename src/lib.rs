@@ -1,14 +1,5 @@
-pub fn add(left: usize, right: usize) -> usize {
-    left + right
-}
+mod modules;
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use crate::modules::scientific_notation::error::SciError;
+pub use crate::modules::scientific_notation::error::SciResult;
+pub use crate::modules::scientific_notation::sci_not::ScientificNotation;
