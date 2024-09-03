@@ -14,6 +14,7 @@ pub enum SciError {
     ParseError(Option<String>),
     PrecisionError(Option<String>),
     ScaleError(Option<String>),
+    Unexpected(String)
 }
 
 impl From<Error> for SciError {

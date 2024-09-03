@@ -1,9 +1,9 @@
-
+use std::cmp::Ordering;
 use std::fmt::{Display, Formatter};
 use rust_decimal::{Decimal, RoundingStrategy};
 use crate::modules::scientific_notation::error::{SciError, SciResult};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialOrd, PartialEq)]
 /// Maximum parsing allowed as coefficient mantissa: i64, meaning, on creation, up to i64::MAX and i64::MIN
 /// is allowed.
 /// ## Examples:
@@ -14,15 +14,22 @@ use crate::modules::scientific_notation::error::{SciError, SciResult};
 /// - Invalid number
 /// 9.2233720368547758070x10^5 -> The mantissa contains a value 10 times higher than i64::MAX,
 /// conversion will fail
-pub struct ScientificNotation {
+pub struct SciNote {
     pub(crate) coefficient: Decimal,
     pub(crate) exponent: i16,
-    pub(crate) display_decimals: usize
+    pub(crate) display_decimals: Option<usize>
 }
 
-impl ScientificNotation {
+impl SciNote {
+    pub fn zero() -> Self {
+        Self {
+            coefficient: Decimal::ZERO,
+            exponent: 0,
+            display_decimals: Some(0)
+        }
+    }
     pub fn build() -> Self {
-        ScientificNotation::default()
+        SciNote::default()
     }
 
     pub fn coefficient(mut self, coefficient: Decimal) -> Self {
@@ -36,11 +43,13 @@ impl ScientificNotation {
     }
 
     pub fn display_decimals(mut self, decimals: usize) -> Self {
-        self.display_decimals = decimals;
+        self.display_decimals = Some(decimals);
         self
     }
 
     pub fn parse_from_str(input: &str) -> SciResult<Self> {
+
+        //  TODO check parsing from zero, if user inputs "0", then coefficient = 0, and exponent = 0
 
         let input = input.to_string();
 
@@ -61,28 +70,18 @@ impl ScientificNotation {
             .parse::<i16>()
             .map_err(|error| SciError::ParseError(Some(error.to_string())))?;
 
-        let display_decimals_unparsed = coefficient.fract();
-        let display_decimals = if display_decimals_unparsed == Decimal::ZERO {
-            0
-        } else {
-            display_decimals_unparsed
-                .to_string()
-                .split('.')
-                .collect::<Vec<&str>>()[1]
-                .len()
-        };
-
         Ok(Self {
             coefficient,
             exponent,
-            display_decimals
+            display_decimals: None
         })
     }
 
-    pub fn sum(&mut self, other: Self) -> SciResult<Self> {
+    pub fn add(&self, input2: &Self) -> SciResult<Self> {
+        let mut input1 = *self;
         //  First, equalize exponents
-        let exponent_diff = self.exponent - other.exponent;
-        self.exponent -= exponent_diff;
+        let exponent_diff = input1.exponent - input2.exponent;
+        input1.exponent -= exponent_diff;
 
         //  Second, adapt coefficient to that exponent equalization
         for _ in 0..exponent_diff.abs() {
@@ -93,11 +92,15 @@ impl ScientificNotation {
             } else {
                 Decimal::new(1, 1)
             };
-            self.coefficient *= exponent_value;
+            input1.coefficient *= exponent_value;
         }
 
         //  Third, with exponents equalized, sum coefficients
-        let mut coefficient_sum_result = self.coefficient + other.coefficient;
+        let mut coefficient_sum_result = input1.coefficient + input2.coefficient;
+
+        //  Scale to always be 1 digit integer. If there's more than one digit, shift right, if there's less, shift left
+        //  TODO implement scale function here
+
 
         //  Obtaining the mantissa length to convert into a single int, with the needed decimal places
         let old_mantissa = coefficient_sum_result.mantissa();
@@ -119,39 +122,134 @@ impl ScientificNotation {
         };
 
         //  Adapt the exponent to the new scale
-        let new_exponent = self.exponent + scale_shift_amount;
-        let new_display_decimals = if self.coefficient.mantissa().to_string().len() > 3 {
-            //  If mantissa is too long, round to a default of 3 decimals
-            3
+        let new_exponent = input1.exponent + scale_shift_amount;
+
+        let display_decimals = if let Some(decimals) = input1.display_decimals {
+            Some(decimals)
+        } else if let Some(decimals) = input2.display_decimals {
+            Some(decimals)
         } else {
-            coefficient_sum_result.mantissa().to_string().len() - 1
+            None
         };
 
         Ok(Self {
             coefficient: coefficient_sum_result,
             exponent: new_exponent,
-            display_decimals: new_display_decimals
+            display_decimals
         })
     }
-}
 
-impl Default for ScientificNotation {
-    fn default() -> Self {
-        Self {
-            coefficient: Decimal::from(1),
-            exponent: i16::default(),
-            display_decimals: 2
+    /// Shift either left or right the coefficient to have always one digit as int part
+    ///
+    /// Return (output_decimal_number, places_shifted)
+    ///
+    /// A positive shift number means the exponent will grow, and a negative, it'll shrink
+    pub(super) fn scale_to_one_integer_digit(input_coefficient: Decimal) -> SciResult<(Decimal, i16)> {
+
+        //  Initialize parser variables
+        let input_string = input_coefficient.to_string();
+
+        let integer_string;
+        let decimal_string;
+        if !input_string.contains('.') {
+            //  If there's no decimal point, then the number is an integer
+            integer_string = input_string.as_str();
+            decimal_string = "";
+        } else {
+            //  Otherwise, it's decimal
+            let parsed = input_string.split('.').collect::<Vec<&str>>();
+            integer_string = parsed[0];
+            decimal_string = parsed[1];
+        }
+
+        //  Parse into Decimal to validate their lengths, and determine if they contain leading zeroes
+        let integer_parsed = integer_string.parse::<Decimal>()?;
+        let decimal_parsed = decimal_string.parse::<Decimal>().unwrap_or(Decimal::ZERO);
+
+        //  Evaluate if we need to shift right
+        match (integer_string.len().cmp(&integer_parsed.to_string().len()), integer_string.len().cmp(&1usize)) {
+            (Ordering::Equal, Ordering::Greater) => {
+                //  Example case: 2134.xxxx
+                //  No leading zeros and need to adjust right, exponent will increase and coefficient will decrease
+                let right_shift = integer_string.len() as i16 - 1;
+                let new_scale = right_shift as u32 - decimal_string.len() as u32;
+                
+                let mut output_coefficient = input_coefficient;
+                output_coefficient.set_scale(new_scale)?;
+
+                return Ok((output_coefficient, right_shift))
+            },
+            (Ordering::Equal, Ordering::Equal) => {
+                //  Example case: 2.xxxx or 0.xxxx
+                //  Don't need to shift in the first case, return as it is with shift = 0
+                if integer_parsed != Decimal::ZERO {
+                    dbg!("Returned here");
+                    return Ok((input_coefficient, 0))
+                }
+                //  Otherwise, continue and evaluate if we need to shift left
+            },
+            (Ordering::Less, _) => {
+                //  String integer portion cannot be smaller than the Decimal parsed integer portion,
+                // it'd be the inverse case of leading zeros
+                return Err(SciError::Unexpected("Unexpected parse error".to_string()))
+            },
+            (_, Ordering::Less) => {
+                //  Integer portion in string format cannot have a length smaller than 1, it'd be
+                // non-existent. Ex: .xxxx, the zero is missing
+                return Err(SciError::Unexpected("Invalid parsed integer number".to_string()))
+            }
+            (Ordering::Greater, _) => {
+                //  Continue and evaluate shift left
+            }
+        }
+
+        //  If decimal portion is zero, then the number is an integer. If we got to this point
+        // without any shifts, there's something wrong, it's best to just return and have a valid number
+        if decimal_parsed.is_zero() {
+            dbg!("Returned here");
+            return Ok((input_coefficient, 0))
+        }
+
+        //  Evaluate if we need to shift left
+        match decimal_string.len().cmp(&decimal_parsed.to_string().len()) {
+            Ordering::Equal | Ordering::Greater => {
+                //  We need to shift left, determine the amount of places to shift
+                //  Example case: x.000123 -> Shift left by 4 places
+                //  Other example: x.1 -> Shift left by 1 space
+                let left_shift = decimal_string.len() - decimal_parsed.to_string().len() + 1;
+                let new_scale = decimal_parsed.to_string().len() as u32 - 1;
+                
+                let mut output_coefficient = input_coefficient;
+                output_coefficient.set_scale(new_scale)?;
+
+                Ok((output_coefficient, -(left_shift as i16)))
+            },
+            Ordering::Less => {
+                //  In this case, the decimal portion in string format was shorter than the decimal
+                // parsed one. Error that should not happen
+                Err(SciError::Unexpected("Unexpected parse error".to_string()))
+            }
         }
     }
 }
 
-impl Display for ScientificNotation {
+impl Default for SciNote {
+    fn default() -> Self {
+        Self {
+            coefficient: Decimal::from(1),
+            exponent: i16::default(),
+            display_decimals: None
+        }
+    }
+}
+
+impl Display for SciNote {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
             "{}x10^{}",
             self.coefficient.round_dp_with_strategy(
-                self.display_decimals as u32, RoundingStrategy::MidpointTowardZero
+                self.display_decimals.unwrap_or(2) as u32, RoundingStrategy::MidpointTowardZero
             ),
             self.exponent
         )
